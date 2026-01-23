@@ -1,0 +1,5 @@
+name = "Ricardo Perez Castillo"
+SID = "3041886344"
+email = "ricardoperez@berkeley.edu"
+github_name = "ricardo-pc"
+
