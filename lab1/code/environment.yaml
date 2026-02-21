@@ -1,0 +1,15 @@
+name: stat214
+channels:
+  - defaults
+dependencies:
+  - python
+  - pip:
+    - numpy
+    - pandas
+    - matplotlib
+    - seaborn
+    - scikit-learn
+    - plotly
+    - kaleido
+    - jupyterlab
+    - openpyxl

@@ -1,0 +1,423 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{graphicx}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{amsmath}
+
+
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+
+%make lists tighter
+\usepackage{enumitem}
+\setlist{nolistsep}
+
+%reduce spacing before and after section
+\usepackage{titlesec}
+\titlespacing\section{0pt}{6pt}{0pt}
+
+\title{Lab 1 - PECARN TBI Data, STAT 214, Spring 2026}
+
+% submission must not contain your name
+% but feel free to make a version for yourself with your name on it
+\author{Anonymous}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}\label{introduction}
+
+Traumatic brain injuries (TBI) are a leading cause of death in patients younger than 18, and high-risk patients must be identified urgently to prescribe appropriate interventions. CT scans are the standard for detecting TBI, but Mathews et al. (2013) \cite{Mathews2013} found that CT exposure in childhood increased cancer incidence by 24\%, with risk rising 16\% per additional scan. It is therefore critical to identify children at very low risk of clinically-important brain injuries (ciTBI) to avoid unnecessary radiation exposure.
+
+The PECARN study enrolled children younger than 18 with minor head trauma across 25 emergency departments, producing a dataset of 43,399 patients and 125 clinical features. In this report, I conduct an EDA of this dataset to validate the Kuppermann clinical decision rule, quantify the sensitivity-specificity tradeoff of potential modifications, and apply Bayesian inference to assess the predictive value of individual symptoms. I then implement and compare three classification models: the Kuppermann rule, logistic regression, and random forests.
+
+
+
+\section{Data}\label{data}
+
+The data is from the PECARN TBI study, a multi-center prospective observational cohort study conducted across 25 emergency departments in the United States between 2004 and 2006 \cite{Kuppermann2009}. The study enrolled children younger than 18 years presenting within 24 hours of blunt head trauma. Exclusion criteria removed patients with penetrating trauma, known brain tumors, pre-existing neurological disorders, neuroimaging at outside hospitals, ventricular shunts, or bleeding disorders.
+
+The raw dataset contains 43,399 patients and 125 features spanning: injury mechanism and severity, symptoms (loss of consciousness, amnesia, vomiting, headache, seizure), Glasgow Coma Scale components, altered mental status indicators, skull fracture signs, scalp hematoma characteristics, neurological deficits, other injuries, demographics (age, gender, ethnicity), and clinical outcomes. The primary outcome is clinically-important TBI (ciTBI), defined as death from TBI, neurosurgery, intubation for more than 24 hours, or hospitalization for two or more nights with TBI visible on CT. After applying inclusion and exclusion criteria, the final dataset contains 42,047 patients, of whom 376 (0.89\%) experienced ciTBI.
+
+
+\subsection{Data Collection}\label{data-collection}
+Data was collected by trained site investigators who recorded patient history, injury mechanism, symptoms, and clinical signs on a standardized form \textit{before} knowing imaging results, minimizing ascertainment bias. To identify missed TBI cases, research coordinators conducted telephone follow-ups between 7 and 90 days after discharge, supplemented by medical and morgue records when contact failed.
+
+The 125 features include binary clinical signs from physician examination, patient-reported symptoms (with pre-verbal children coded as such rather than absent), Glasgow Coma Scale scores (3--15), injury mechanism in eight categories with a severity indicator, and temporal features recorded at clinically meaningful thresholds. The dataset distinguishes true missing values (NA) from conditional skip logic (92 = ``Not Applicable'').
+
+
+
+\subsection{Data Cleaning}\label{data-cleaning}
+
+The following examinations were conducted on the raw data:
+
+\begin{enumerate}
+    \item \textbf{Column renaming:} All 125 columns renamed to lowercase, underscore-separated format.
+    \item \textbf{Data types:} Converted all columns to nullable \texttt{Int64} to support NaN without float upcasting.
+    \item \textbf{Missing values:} Quantified missingness across all features. Outcome had 20 missing (0.05\%). Dizziness (36.8\%) and ethnicity (36.8\%) had the highest rates. True NaN was distinguished from coded values (92 = Not Applicable, 91 = Pre-verbal).
+    \item \textbf{Duplicates:} No duplicate patient IDs found.
+    \item \textbf{Range checks:} Age 0--17 and GCS 3--15 as expected. Two patients had GCS component scores that did not sum to the recorded total.
+    \item \textbf{Consistency checks:} Verified logical relationships (e.g., no hematoma $\rightarrow$ hematoma location must be ``Not Applicable''). No inconsistencies found.
+    \item \textbf{Invalid values:} All 121 categorical features validated against the data dictionary code sets. No invalid values found.
+\end{enumerate}
+
+\subsection{Data Preprocessing}\label{data-preprocessing}
+
+\textbf{Inclusion and exclusion criteria.} Three filters were applied to replicate the Kuppermann et al. study population:
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{Xr}
+\hline
+Step & Patients \\
+\hline
+Raw dataset & 43,399 \\
+Exclude trivial injuries & $-$202 \\
+Exclude GCS 3--13 (moderate to severe) & $-$969 \\
+Exclude missing outcome & $-$18 \\
+\hline
+Final dataset & 42,047 \\
+\hline
+\end{tabularx}
+\caption{Exclusion criteria applied to arrive at the analysis dataset.}
+\label{tab:exclusions}
+\end{table}
+
+\textbf{Missing values} were not imputed. Rows were dropped only when a specific analysis required a feature with missing data. Dizziness was excluded from modeling entirely due to 36.8\% missingness.
+
+\textbf{Feature selection.} From 125 features, 25 clinically relevant features available at the point of care were selected for modeling, excluding identifiers, outcome-adjacent variables, conditional sub-fields, and CT-related variables.
+
+\textbf{Standardization} (zero mean, unit variance) was applied for PCA and logistic regression. 
+
+\textbf{One-hot encoding} was applied to multi-category nominal variables (e.g., injury mechanism) for logistic regression. Binary and ordinal variables were left unchanged.
+
+
+\subsection{Data Exploration}\label{data-exploration}
+
+Exploratory Data Analysis was guided by domain knowledge, defining a set of questions related to the goal of classifying whether a CT scan should be recommended (predicting ciTBI).
+
+\subsubsection{Class Imbalance}
+
+Of the 42,047 patients in the preprocessed dataset, only 376 (0.89\%) experienced ciTBI. This severe class imbalance has direct implications for modeling: a classifier that always predicts ``No CT needed" would achieve 99.1\% accuracy while missing every child who actually needs intervention. This means accuracy is a misleading metric for this dataset, and evaluation should instead focus on sensitivity (proportion of true TBI cases caught) and specificity (proportion of non-TBI cases correctly spared from CT).
+
+
+\subsubsection{Symptom Association with ciTBI}
+
+For each binary clinical feature, I computed the TBI rate when the feature is present versus absent, and derived the risk ratio (TBI rate when present divided by TBI rate when absent). The strongest predictors were palpable skull fracture (risk ratio: 21.1), basilar skull fracture (17.9), and altered mental status (9.7), which are core features of the Kuppermann rule. Features like sedated (7.0) and intubated also showed elevated risk ratios, but these are clinical interventions applied because the patient is already severely injured, not predictive signs.
+
+
+
+I then segmented this analysis by age group ($<$2 years vs $\geq$2 years), since the Kuppermann rule uses different predictors for each group. Key differences emerged: palpable skull fracture had a much higher risk ratio in infants (37.0 vs 14.2), consistent with thinner infant skulls making fractures a stronger danger signal. Fontanelle bulging was relevant only for infants (older children have closed fontanelles). For older children, headache and vomiting were stronger signals, which is why Kuppermann includes them only in the $\geq$2 rule. Altered mental status was the most robust universal predictor, ranking highly in both groups (risk ratio: 10.4 for $\geq$2, 8.3 for $<$2).
+
+% INSERT: Q2 grouped bar chart (TBI rate by feature, split by age group)
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{q2_age_stratified_features.pdf}
+\caption{TBI rates by clinical feature, stratified by age group. Palpable skull fracture shows dramatically higher risk in children under 2 years (RR: 37.0) compared to older children (RR: 14.2), reflecting thinner infant skulls. Conversely, headache and vomiting are stronger signals for children aged 2 and older, explaining why the Kuppermann rule uses different predictors for each age group.}
+\label{fig:age-stratified-features}
+\end{figure}
+
+
+\subsubsection{Age and TBI Risk}
+
+The TBI rate was uniform across age groups: 0.92\% for children $<$2 years and 0.89\% for children $\geq$2 years. The per-age breakdown showed rates fluctuating narrowly between 0.53\% and 1.46\% with no clear trend. The one subtle pattern was that age 0 (infants under 1 year) had the highest rate at 1.25\%, roughly double that of ages 1 through 5. This finding is significant: the Kuppermann rule splits by age not because one group has higher TBI risk, but because the clinical features that predict TBI differ by developmental stage.
+
+
+\subsubsection{Injury Mechanism and Outcomes}
+
+Higher-energy mechanisms showed the highest TBI rates: pedestrian struck by vehicle, bike rider struck by automobile, and other wheeled transport crashes all exceeded 2\%, roughly three times the overall base rate. High injury severity had a 2.38\% TBI rate versus less than 1\% for all others. When segmented by age group, the $<$2 year group showed higher rates for occupant in motor vehicle and assault, while the $\geq$2 group was dominated by activities younger children cannot perform (biking, skating). Notably, ``walked into stationary object" had the lowest TBI rate (0.13\%).
+
+
+
+
+I investigated the rare TBI cases from low-risk mechanisms to check whether other warning signs were present. Among TBI-positive patients with trivial mechanisms, the most common features were scalp hematoma (71\%), acting abnormally (80\% had acting\_normal = Yes, but 20\% did not), and vomiting (34\%). This suggests that other Kuppermann features would have flagged these patients even when the mechanism appeared benign.
+
+
+\subsubsection{Feature Structure}
+
+PCA was performed on 25 standardized clinical features to explore whether the data exhibited low-dimensional structure. The first 14 principal components were needed to explain 80\% of the variance, indicating that the clinical features provide largely independent information rather than clustering into a few underlying syndromes. No clear separation between TBI-positive and TBI-negative patients was observed in PC1-PC2 space, confirming that ciTBI is not captured by a simple linear combination of features. This further motivates the use of nonlinear classification methods.
+
+
+
+
+
+
+\section{Findings}\label{findings}
+
+\subsection{First finding: The Kuppermann rule's missed patients are not asymptomatic}\label{first-finding}
+
+The Kuppermann decision rule achieves 100\% sensitivity for children under 2 years, catching all 98 TBI cases. For children 2 years and older, it catches 246 of 278 TBI cases (88.5\% sensitivity), missing 32 patients. By definition, none of these 32 patients had any of the features the rule checks for: no altered mental status, no basilar skull fracture, no loss of consciousness, no vomiting, no severe injury mechanism, and no severe headache.
+
+However, these patients were not truly asymptomatic. Figure~\ref{fig:missed_profile} shows that only 3 of the 32 (9.4\%) had zero non-Kuppermann clinical features. The remaining 29 presented with between 1 and 6 features that the rule does not evaluate for this age group. The most common were not acting normally (50\%), scalp hematoma (46.9\%), headache of any severity (37.5\%), and other injuries (31.2\%). Notably, 8 patients (25\%) had moderate headache, which the Kuppermann rule ignores in favor of flagging only severe headache.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.80\textwidth]{finding1_missed_patients.pdf}
+    \caption{Prevalence of non-Kuppermann features among the 32 missed TBI patients ($\geq$ 2 years). Red bars indicate features present in at least 25\% of missed patients. Only 3 patients (9.4\%) were truly asymptomatic. The remaining 29 had combinations of mild symptoms that the rule does not evaluate, suggesting that a model capable of weighting feature combinations could recover these cases.}
+    \label{fig:missed_profile}
+\end{figure}
+
+Two features stand out. Scalp hematoma and not acting normally are both used as predictors in the Kuppermann rule for children under 2, but are excluded from the rule for older children. Their high prevalence among missed patients suggests these features may have predictive value across all ages, not just in infants. Similarly, the moderate headache finding reveals a gap in the rule's threshold: 25\% of missed patients had headache that was not severe enough to trigger the rule but was clearly present.
+
+This finding has a direct implication for modeling: the 32 missed patients are not random noise or edge cases that no model could catch. Most of them have identifiable clinical features, just not the ones Kuppermann checks. A model that can weight combinations of individually mild symptoms, such as logistic regression or a random forest, has the potential to recover a substantial fraction of these cases without the brute-force approach of simply adding more binary flags to the existing rule.
+
+\subsection{Second Finding: Kuppermann Rule Sensitivity-Specificity Tradeoff}\label{second-finding}
+
+As shown in Finding 1, the 32 missed ciTBI patients in the $\geq 2$ age group were not truly asymptomatic: most presented with non-Kuppermann symptoms, particularly scalp hematoma (46.9\%) and moderate headache (25\%). This raises a natural question: would adding these features to the rule improve sensitivity? Table~\ref{tab:tradeoff} shows the result. Each addition catches a few more TBI cases but at the cost of thousands of additional unnecessary CT scans. Adding scalp hematoma alone recovers 13 more cases but flags 6,264 additional non-TBI patients. Adding moderate headache recovers 8 more but flags 2,451 additional. Adding both recovers 18 more but requires 7,786 additional CTs, dropping specificity from 55.1\% to 30.2\%.
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\textwidth]{finding2_tradeoff.pdf}
+    \caption{Sensitivity-specificity tradeoff for the Kuppermann rule ($\geq$ 2 years) with proposed feature additions. Adding features improves sensitivity (red) but sharply reduces specificity (blue).}
+    \label{fig:finding2_tradeoff}
+\end{figure}
+
+
+This illustrates the core limitation of binary OR rules: simply adding more flags will always improve sensitivity at the expense of specificity. The improvement must instead come from a model that can weight combinations of features, learning that moderate headache alone does not warrant a CT, but moderate headache combined with scalp hematoma and a non-trivial injury mechanism together might. This motivates the logistic regression and tree-based approaches explored in the Modeling section.
+
+
+\subsection{Third finding: Bayesian posterior probabilities and symptom co-occurrence}\label{third-finding}
+
+While the Kuppermann rule treats each feature as an independent binary flag, real patients present with clusters of symptoms. To quantify how much each symptom should update a clinician's suspicion of TBI, I computed Bayesian posterior probabilities: given that a patient presents with a specific symptom, what is the revised probability of TBI?
+
+Starting from the prior probability of 0.89\% (the base rate in our dataset), I applied Bayes' theorem for each symptom individually. Table~\ref{tab:bayes} presents the results ranked by posterior probability.
+
+\begin{table}[h]
+\centering
+\caption{Bayesian posterior probabilities: how much each symptom updates the prior probability of TBI (0.89\%). The Bayes factor indicates the multiplicative increase in odds relative to the prior.}
+\label{tab:bayes}
+\small
+\begin{tabular}{lcccc}
+\hline
+\textbf{Symptom} & \textbf{P(s $|$ TBI)} & \textbf{P(s)} & \textbf{P(TBI $|$ s)} & \textbf{BF} \\
+\hline
+Palpable skull fracture   & 6.6\%  & 0.4\%  & 15.62\% & 20.5 \\
+Basilar skull fracture    & 10.9\% & 0.7\%  & 14.29\% & 18.5 \\
+Altered mental status     & 59.6\% & 13.0\% &  4.08\% &  4.7 \\
+Seizure                   & 4.5\%  & 1.2\%  &  3.44\% &  3.9 \\
+Neurological deficit      & 4.3\%  & 1.3\%  &  2.90\% &  3.3 \\
+Loss of consciousness     & 30.9\% & 10.5\% &  2.64\% &  3.0 \\
+Amnesia                   & 27.1\% & 10.5\% &  2.30\% &  2.6 \\
+Other injuries            & 23.9\% & 10.2\% &  2.11\% &  2.4 \\
+Vomiting                  & 30.9\% & 13.2\% &  2.09\% &  2.4 \\
+\hline
+Scalp hematoma            & 61.2\% & 39.8\% &  1.38\% &  1.5 \\
+Headache                  & 43.4\% & 30.2\% &  1.28\% &  1.4 \\
+Acting normally           & 33.2\% & 78.1\% &  0.38\% &  0.4 \\
+\hline
+\end{tabular}
+\end{table}
+
+The most striking result is the gap between rare, highly specific symptoms and common, weakly informative ones. Palpable skull fracture is present in only 0.4\% of all patients but in 6.6\% of TBI patients, yielding a posterior of 15.62\% and a Bayes factor of 20.5, meaning it increases the odds of TBI by a factor of 20. Basilar skull fracture behaves similarly (Bayes factor 18.5). These are the features that, when present, should most strongly trigger a CT recommendation.
+
+At the other end, scalp hematoma and headache are common in both TBI and non-TBI patients. Despite being present in over 60\% and 43\% of TBI cases respectively, their high base rates (39.8\% and 30.2\%) dilute their diagnostic value to Bayes factors of just 1.5 and 1.4. Acting normally has a Bayes factor below 1 (0.4), meaning its presence actually reduces the probability of TBI.
+
+However, individual symptom probabilities do not capture the full picture. Figure~\ref{fig:cooccurrence} shows the conditional probability P(symptom B $|$ symptom A) among TBI-positive patients. Scalp hematoma co-occurs with nearly every other symptom at rates above 60\%, and AMS co-occurs with LOC in over a third of cases. These rates are far higher than expected under independence, confirming that symptoms form correlated clusters rather than independent signals.
+
+
+% ── INSERT FIGURE HERE: finding3_cooccurrence.pdf ──
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.80\textwidth]{finding3_cooccurrence.pdf}
+    \caption{Conditional probability of symptom co-occurrence among TBI-positive patients. Each bar shows P(symptom B $|$ symptom A), the probability that a TBI patient with symptom A also presents with symptom B. The high co-occurrence rates, particularly involving scalp hematoma, indicate that symptoms cluster together rather than occurring independently.}
+    \label{fig:cooccurrence}
+\end{figure}
+
+This analysis has two implications for modeling. First, a small number of features (skull fractures, altered mental status) carry most of the diagnostic signal, while common symptoms like headache and scalp hematoma are better understood as corroborating evidence rather than primary indicators. Second, the strong co-occurrence patterns suggest that models capable of capturing feature interactions (such as logistic regression with interaction terms, or tree-based methods) will outperform naive independent-feature approaches.
+
+\subsection{Reality Check}\label{reality-check}
+
+I validated the cleaned dataset against three external reference points:
+
+\textbf{Cohort size.} After applying the same inclusion and exclusion criteria described by Kuppermann et al. \cite{Kuppermann2009}, the cleaned dataset contains 42,047 patients. The original study reports 42,412. The small discrepancy of 202 patients likely reflects differences in how the trivial injury exclusion was operationalized, since the exact filtering logic is not fully specified in the paper.
+
+\textbf{TBI prevalence.} The dataset shows a ciTBI rate of 0.89\% (376 of 42,047). The original study reports 0.9\%, and broader epidemiological estimates for pediatric ED head trauma place the rate between 0.5\% and 1.5\%. Our observed rate falls within this range, suggesting the outcome variable is coded correctly and the exclusion criteria did not disproportionately remove TBI-positive patients.
+
+\textbf{Clinical associations.} Known clinical relationships hold in the cleaned data. Skull fractures are the strongest individual predictors (Bayes factors of 20.5 and 18.5), altered mental status ranks highly (4.7), and acting normally is protective (0.4), all consistent with established clinical knowledge and the original study's findings.
+
+The cleaned data passes all three checks, confirming that the preprocessing pipeline preserved meaningful clinical signal.
+
+
+
+\subsection{Stability Check}\label{stability-check}
+The judgment call being perturbed is the decision to compute Bayesian posteriors (Finding 3) from the full dataset as fixed point estimates. To test sensitivity to sampling variability, I resampled the dataset (n = 42,047) with replacement 1,000 times and recomputed the Bayes factor for each symptom.
+
+The most diagnostically powerful features are also the least precisely estimated. Palpable skull fracture has a mean Bayes factor of 20.9 but a 95\% CI of [13.1, 30.2], and basilar skull fracture shows a similar pattern ([13.2, 24.9]). This reflects the rarity of these symptoms (0.4\% and 0.7\% prevalence). In contrast, common symptoms produce tight estimates: scalp hematoma (BF 1.5, CI [1.4, 1.7]), vomiting (2.4, CI [2.0, 2.7]). Crucially, the ranking of symptoms by diagnostic value is stable across all resamples: skull fractures and altered mental status consistently occupy the top positions.
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.70\textwidth]{stability_check.pdf}
+    \caption{Bootstrap 95\% CI for Bayes factors (1,000 resamples). Rare symptoms (skull fractures) carry the strongest diagnostic signal but also the widest uncertainty, while common symptoms are precisely estimated but weakly informative.}
+    \label{fig:stability}
+\end{figure}
+
+
+
+\section{Modeling}\label{modeling}
+
+I split the dataset into training (70\%, n = 29,432), validation (15\%, n = 6,308), and test (15\%, n = 6,307) sets using stratified sampling to preserve the 0.89\% TBI prevalence in each split. All three models are evaluated on the same held-out test set.
+
+\subsection{Implementation}\label{implementation}
+
+\subsubsection{Model 1: Kuppermann Clinical Decision Rule}
+
+A direct replication of the rule from Kuppermann et al., applying different criteria for children under 2 and children 2 and older as described in Section~\ref{data-exploration}. The rule has no tunable parameters and functions as a logical OR over a fixed set of binary conditions, where any single positive feature triggers a CT recommendation.
+
+\subsubsection{Model 2: Logistic Regression}
+
+Logistic regression models the probability of TBI as:
+\[
+P(\text{TBI} = 1 \mid \mathbf{x}) = \sigma(\beta_0 + \beta_1 x_1 + \cdots + \beta_p x_p)
+\]
+where $\sigma(z) = 1/(1 + e^{-z})$. Unlike the Kuppermann rule, logistic regression learns a weight $\beta_j$ for each feature, allowing combinations of mild symptoms to collectively flag a patient even when no single feature would.
+
+I selected 19 clinical features available at triage, one-hot encoding injury mechanism to produce 30 features total. All features were standardized to mean zero and unit variance (fit on training set only). To address class imbalance, I used balanced class weights, upweighting each TBI case by approximately 112$\times$, and applied L2 regularization ($C = 1.0$).
+
+Rather than the default threshold of 0.5, I swept thresholds on the validation set and selected the highest threshold achieving $\geq$90\% sensitivity. The optimal threshold was 0.29 (validation: 92.9\% sensitivity, 71.9\% specificity). On the test set, sensitivity was 84.2\%, the gap from validation is expected since the threshold was optimized there.
+
+\subsubsection{Model 3: Random Forest}
+
+A random forest is an ensemble of decision trees, each trained on a bootstrap sample of the data. Unlike logistic regression, trees can capture non-linear relationships and feature interactions automatically (e.g., scalp hematoma combined with not acting normally indicates high risk, while either alone does not). Standardization is not required.
+
+I evaluated 18 hyperparameter combinations on the validation set using the same criterion (maximize specificity subject to sensitivity $\geq$90\%). The best configuration was 500 trees, unlimited depth, minimum 10 patients per leaf, with $\sqrt{p} \approx 5$ features considered at each split. Balanced class weights were applied identically to logistic regression. The optimal threshold was 0.21.
+
+\subsubsection{Model Comparison}
+
+\begin{table}[H]
+\centering
+\caption{Head-to-head comparison of all three models on the same held-out test set (n = 6,308).}
+\label{tab:model_comparison_final}
+\small
+\begin{tabular}{lccc}
+\hline
+\textbf{Metric} & \textbf{Kuppermann} & \textbf{Logistic Reg.} & \textbf{Random Forest} \\
+\hline
+Sensitivity       & 91.2\%    & 84.2\%  & 84.2\% \\
+Specificity       & 43.9\%    & 72.7\%  & 79.0\% \\
+Precision         & 1.46\%    & 2.74\%  & 3.53\% \\
+Unnecessary CTs   & 3,506     & 1,707   & 1,312 \\
+Missed TBI        & 5         & 9       & 9 \\
+AUC-ROC           & N/A       & 0.857   & 0.874 \\
+\hline
+\end{tabular}
+\end{table}
+
+The three models trace a clear tradeoff. The Kuppermann rule catches the most TBI (91.2\%) but at the cost of 3,506 unnecessary CTs. Logistic regression cuts unnecessary scans by 51\% while dropping sensitivity by 7 points. The random forest goes further, reducing unnecessary CTs by 63\% versus Kuppermann while matching logistic regression's sensitivity. The AUC improvement (0.857 to 0.874) confirms better overall discriminative ability from capturing non-linear patterns.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{rf_roc_comparison.pdf}
+    \caption{ROC curve comparison. The random forest (AUC = 0.874) slightly outperforms logistic regression (AUC = 0.857) across all thresholds.}
+    \label{fig:rf_roc}
+\end{figure}
+
+\subsection{Interpretability}\label{interpretability}
+
+The Kuppermann rule is fully interpretable by design: check a short list of features, and if any is present, recommend a CT. It requires no computation and can be applied from memory, which is why it remains the clinical standard.
+
+Logistic regression is a white-box model where every prediction traces back to learned coefficients. Table~\ref{tab:lr_coefs} shows the top features. Injury severity, scalp hematoma, and altered mental status are the strongest positive predictors; acting normally is the strongest negative predictor. For any patient, a clinician can compute the weighted sum, add the intercept ($\beta_0 = -1.52$), and apply the sigmoid to get a probability, communicating risk magnitude rather than just a binary flag.
+
+\begin{table}[H]
+\centering
+\caption{Top logistic regression coefficients. The odds ratio indicates the multiplicative change in TBI odds per standard deviation increase.}
+\label{tab:lr_coefs}
+\small
+\begin{tabular}{lcc}
+\hline
+\textbf{Feature} & \textbf{Coefficient ($\beta$)} & \textbf{Odds Ratio ($e^\beta$)} \\
+\hline
+Injury severity          & +0.529 & 1.70 \\
+Scalp hematoma           & +0.499 & 1.65 \\
+Altered mental status    & +0.493 & 1.64 \\
+Vomiting                 & +0.414 & 1.51 \\
+Loss of consciousness    & +0.385 & 1.47 \\
+Palpable skull fracture  & +0.369 & 1.45 \\
+\hline
+Acting normally          & $-$0.459 & 0.63 \\
+\hline
+\end{tabular}
+\end{table}
+
+Notably, scalp hematoma receives the second-highest coefficient despite not being in the Kuppermann rule for children $\geq$2, consistent with our Finding 1 that 46.9\% of missed patients had scalp hematoma.
+
+Random forests are less directly interpretable, but provide feature importance through mean decrease in Gini impurity. The ranking differs from logistic regression: altered mental status tops both, but scalp hematoma drops from 2nd (LR) to 7th (RF). This reflects how correlated features compete for splits in trees, since scalp hematoma co-occurs with AMS in 62.5\% of TBI cases, the forest often splits on AMS instead, diluting scalp hematoma's importance score. Conversely, age ranks 3rd in the RF because trees capture non-linear age effects through multiple splits, while logistic regression can only model a single linear slope.
+
+The tradeoff across all three models is ultimately one of interpretability versus selectivity. A clinician can apply Kuppermann from memory and compute a logistic regression score with a calculator. A random forest requires software to evaluate 500 trees. In a pediatric emergency department where speed saves lives, this explains why Kuppermann remains the standard despite its low specificity.
+
+
+\subsection{Stability}\label{model-stability}
+
+To assess how each model's predictions change under data perturbation, I applied bootstrap resampling: the training set was resampled with replacement 200 times, each model was retrained (or in Kuppermann's case, re-evaluated on the resampled data), and predictions were computed on the same held-out test set. Table~\ref{tab:model_stability} summarizes the results.
+
+\begin{table}[H]
+\centering
+\caption{Bootstrap 95\% confidence intervals for all three models (200 resamples, evaluated on the same test set).}
+\label{tab:model_stability}
+\small
+\begin{tabular}{llccc}
+\hline
+\textbf{Model} & \textbf{Metric} & \textbf{Mean} & \textbf{95\% CI Lower} & \textbf{95\% CI Upper} \\
+\hline
+Kuppermann    & Sensitivity & 91.5\% & 88.7\% & 94.2\% \\
+              & Specificity & 42.9\% & 42.3\% & 43.3\% \\
+              & Precision   & 1.42\% & 1.28\% & 1.58\% \\
+\hline
+Logistic Reg. & Sensitivity & 82.4\% & 77.1\% & 85.9\% \\
+              & Specificity & 74.2\% & 71.3\% & 77.7\% \\
+              & Precision   & 2.8\%  & 2.6\%  & 3.1\% \\
+\hline
+Random Forest & Sensitivity & 78.5\% & 71.9\% & 84.2\% \\
+              & Specificity & 82.7\% & 81.0\% & 84.7\% \\
+              & Precision   & 3.9\%  & 3.5\%  & 4.4\% \\
+\hline
+\end{tabular}
+\end{table}
+
+Across all three models, specificity and precision are tightly concentrated, which is expected since they are estimated from thousands of non-TBI patients. Sensitivity shows wider intervals in every case, reflecting the small number of TBI cases (n = 57 in the test set). The Kuppermann rule, despite being fixed and deterministic, still shows sensitivity variance because each resample draws a slightly different subset of borderline patients.
+
+The logistic regression and random forest show comparable sensitivity intervals, though the random forest has tighter specificity bounds. This is consistent with the ensemble nature of the model: averaging 500 trees provides built-in stability that a single logistic regression lacks. I also verified that feature rankings were stable across resamples for both models, the top predictors (altered mental status, injury severity, scalp hematoma for LR; altered mental status, acting normally, age for RF) maintained their ordering in all 200 bootstrap samples, confirming that both models learn reproducible patterns rather than fitting to noise.
+
+
+
+\section{Discussion}\label{discussion}
+
+The data size of 42,047 patients was adequate for modeling, although more ciTBI-positive cases would have been beneficial. With only 376 TBI cases (0.89\%), class imbalance posed challenges throughout the analysis. I used stratified sampling to preserve the TBI rate across train, validation, and test sets, but even so, the test set contained only 57 positive cases, meaning each individual missed or caught case shifts sensitivity by nearly 2 percentage points. This is why the bootstrap stability analyses consistently showed wider confidence intervals for sensitivity than for specificity across all three models. The imbalance also rendered accuracy useless as a metric: a model predicting "no TBI" for everyone achieves 99.1\% accuracy, so I relied on sensitivity, specificity, and the tradeoff between unnecessary CTs and missed cases instead.
+
+Regarding the three realms: the data realm includes the PECARN dataset, cleaning, and exploratory analysis. The model realm includes the three classifiers, each approximating the same underlying reality through different approaches. The future data realm is where the real test lies. Having adequate and accurate data is the most important aspect of any analysis, since models can only derive information from what the data contains. Although I created train, validation, and test sets to guard against overfitting, the strongest reality check would come from evaluating on future data, since the conditions of the original data collection could change. For example, improvements in car safety could reduce TBI cases from motor vehicle crashes, shifting the distribution of injury mechanisms and degrading models trained on older data.
+
+I do not think there is a one-to-one correspondence between the data and reality. The dataset captures what was recorded during an ED visit, but clinical reality is richer. A physician observes the child's behavior, hears the parents' tone of voice, and uses pattern recognition that no binary variable can encode. Features like "acting normally" are inherently subjective and vary across observers.
+
+On visualizations, I found them essential for communicating findings but they required careful design. Throughout this report, I paired every figure with underlying numbers and plain-language interpretation, so that visualizations support rather than replace understanding.
+
+
+\section{Conclusion}\label{conclusion}
+
+This analysis of the PECARN dataset reveals that the Kuppermann clinical decision rule, while highly sensitive, leaves room for improvement in specificity. The 32 TBI patients missed by the rule for children $\geq$2 years were not asymptomatic, most had identifiable features the rule does not check, particularly scalp hematoma and moderate headache. However, simply adding these features to the rule degrades specificity dramatically, motivating data-driven approaches.
+
+Logistic regression and random forests both reduced unnecessary CT recommendations by 51--63\% compared to Kuppermann while maintaining sensitivity above 84\%. The random forest achieved the best specificity (79.0\%) by capturing non-linear feature interactions that the linear model cannot. Bayesian analysis confirmed that a small number of features (skull fractures, altered mental status) carry most of the diagnostic signal, while common symptoms like scalp hematoma serve as corroborating evidence.
+
+The fundamental tension remains: the Kuppermann rule's simplicity is its greatest strength in a clinical setting where speed matters. The ML models offer better selectivity but require computational support. A practical path forward may be a hybrid approach: apply the Kuppermann rule as a first-pass screen, then use a logistic regression score for borderline cases to reduce unnecessary scans without sacrificing safety.
+
+
+\section{Academic honesty statement}\label{academic-honesty-statement}
+
+The work in this report is my own and all the sources used are properly cited. Academic research honesty is important because science is built on truth.
+
+\section{Collaborators}\label{collaborators}
+I used Claude (Anthropic) as a coding assistant and for text-condensation, as I initially had 27+ pages and it helped me synthesize it to 14 pages (per the requirement).
+
+
+
+\begin{thebibliography}{9}
+\bibitem{Kuppermann2009}
+Kuppermann, N., et al. (2009). Identification of children at very low risk of clinically-important brain injuries after head trauma: a prospective cohort study. \textit{The Lancet}, 374(9696), 1160--1170.
+\bibitem{Mathews2013}
+Mathews, J.D., et al. (2013). Cancer risk in 680,000 people exposed to computed tomography scans in childhood or adolescence. \textit{BMJ}, 346, f2360.
+\end{thebibliography}
+\end{document}
+
