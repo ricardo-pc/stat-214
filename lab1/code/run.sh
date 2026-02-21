@@ -7,3 +7,5 @@ python models.py                      # trains and evaluates all three models
 
 # optional: bootstrap stability analyses (slow, >10 min)
 # python stability.py
+
+conda deactivate                     # deactivates the conda environment
