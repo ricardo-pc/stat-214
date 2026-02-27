@@ -1,0 +1,13 @@
+name: stat214
+channels:
+  - defaults
+dependencies:
+  - python
+  - notebook
+  - pip:
+      - numpy
+      - pandas
+      - matplotlib
+      - scikit-learn
+      - jupyterlab
+prefix: /opt/anaconda3/envs/stat214
