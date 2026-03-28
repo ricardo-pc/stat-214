@@ -1,0 +1,35 @@
+data:
+  patch_size: 9
+
+dataloader_train:
+  batch_size: 512
+  shuffle: true
+  num_workers: 2
+
+dataloader_val:
+  batch_size: 512
+  shuffle: false
+  num_workers: 2
+
+optimizer:
+  lr: 0.0001
+
+autoencoder:
+  latent_dim: 8
+
+checkpoint:
+  dirpath: ../results/checkpoints
+  filename: "ae-finetune-{epoch:02d}-{val_loss:.4f}"
+  save_top_k: 1
+  monitor: val_loss
+  mode: min
+
+early_stopping:
+  patience: 3
+
+trainer:
+  max_epochs: 10
+  accelerator: auto
+  devices: 1
+  precision: 16-mixed
+  log_every_n_steps: 50

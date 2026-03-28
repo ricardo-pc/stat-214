@@ -1,0 +1,23 @@
+name: env_214
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - scikit-learn
+  - statsmodels
+  - pyyaml
+  - tqdm
+  - jupyterlab
+  - notebook
+  - seaborn
+  - plotly
+  - pip:
+      - torch
+      - lightning
